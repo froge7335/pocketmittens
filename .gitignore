@@ -1,0 +1,12 @@
+dist/
+node_modules/
+
+# Model weights are not distributed: a .onnx is ~45 MB and a .pt checkpoint far more.
+models/*
+!models/.gitkeep
+
+.DS_Store
+*.log
+npm-debug.log*
+.vscode/
+.idea/

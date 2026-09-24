@@ -1,0 +1,23 @@
+{
+  "name": "pocketmittens-extension",
+  "version": "0.1.0",
+  "description": "Chrome extension that overlays a neural-net move hint on lichess.org and chess.com boards.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "test": "node scripts/test-search.mjs"
+  },
+  "dependencies": {
+    "chess.js": "1.4.0",
+    "onnxruntime-web": "1.22.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.9"
+  }
+}
