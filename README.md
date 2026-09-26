@@ -23,8 +23,7 @@ and refresh open board tabs.
 
 ### Supplying a model
 
-Weights are not distributed with this repo, so `models/` starts empty and the build will stop
-with a message until you put exactly one `.onnx` in it. Two ways to get one:
+A sample model has been provided, but it is recommended to import your own. Two ways to do that:
 
 - Train a network with the accompanying training harness and export it:
   `python -m harness export --checkpoint <checkpoint>.pt --verify --device cpu`
