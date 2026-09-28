@@ -138,9 +138,67 @@ const tests = {
     assert.equal(calls, 0);
   },
 
+  // Visit counts outvote a mate two or three moves out as well, which the net plays only about a
+  // third of the time, so those are answered exactly too and cost no evaluations either.
+  async 'a forced mate in 2 is played without evaluating anything'() {
+    const fen = '6k1/pp4p1/2p5/2bp4/8/P5Pb/1P3rrP/2BRRN1K b - - 0 1'; // Rg1+ Nxg1 Rxh2#
+    let calls = 0;
+    const evaluate = async () => {
+      calls += 1;
+      return { priors: new Map(), value: 0 };
+    };
+    assert.deepEqual(await runMcts(fen, evaluate, 256), { uci: 'g2g1', visits: 1, q: 1.0 });
+    assert.equal(calls, 0);
+  },
+
+  async 'a forced mate in 3 is played, and a three-ply budget does not reach it'() {
+    const fen = '5rk1/5Npp/8/8/8/8/Q7/K7 w - - 0 1'; // Nh6+ Kh8 Qg8+ Rxg8 Nf7#
+    let calls = 0;
+    const evaluate = async (f, legalUcis) => {
+      calls += 1;
+      return { priors: priorsFor(legalUcis), value: 0 };
+    };
+    assert.deepEqual(await runMcts(fen, evaluate, 256), { uci: 'f7h6', visits: 1, q: 1.0 });
+    assert.equal(calls, 0);
+    // five plies out, so three plies has to fall through to the search
+    await runMcts(fen, evaluate, 8, { mateDepth: 3 });
+    assert.ok(calls > 0);
+  },
+
+  // The other half of the mate search: it must never claim a mate that is not there.
+  async 'a quiet position still reaches the evaluator'() {
+    const fen = 'r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2N1PN2/PP2BPPP/R1BQ1RK1 w - - 8 10';
+    let calls = 0;
+    const evaluate = async (f, legalUcis) => {
+      calls += 1;
+      return byMaterial(f, legalUcis);
+    };
+    const { uci } = await runMcts(fen, evaluate, 32);
+    assert.ok(calls > 0);
+    assert.ok(new Chess(fen).moves({ verbose: true }).some((m) => m.from + m.to === uci));
+  },
+
+  // Allowing mate in 1 is never better than the alternative, whatever the policy thinks.
+  async 'a root move allowing mate in 1 is never played'() {
+    const fen = 'r6k/6pp/8/8/8/8/6PP/1R5K w - - 0 1'; // Ra1 hands black Rxa1#
+    const wantsIt = async (f, legalUcis) => ({
+      priors: new Map(legalUcis.map((u) => [u, u === 'b1a1' ? 1 : 0])),
+      value: 0,
+    });
+    assert.notEqual((await runMcts(fen, wantsIt, 64)).uci, 'b1a1');
+  },
+
+  async 'a move is still returned when every move allows mate in 1'() {
+    // Kb1 is white's only legal move, and it walks into Rd1#
+    const fen = '3r2k1/8/8/8/8/1p6/2r5/K7 w - - 0 1';
+    const result = await runMcts(fen, byMaterial, 32);
+    assert.equal(result.uci, 'a1b1');
+  },
+
   async 'a mate at depth d backs up -(1 - matePenalty * d)'() {
-    const fools = replay(['f3', 'e5']).pop(); // 2.g4 Qh4#
-    assert.equal(round(await mateValue(fools, ['g4', 'Qh4#'], 40)), -0.99);
+    // a two-ply mate needs a root where every move allows one, the rest being pruned
+    const lost = '3r2k1/8/8/8/8/1p6/2r5/K7 w - - 0 1'; // Kb1 is forced, and walks into Rd1#
+    assert.equal(round(await mateValue(lost, ['Kb1', 'Rd1#'], 40)), -0.99);
     const scholars = replay(['e4', 'e5', 'Bc4', 'Nc6']).pop(); // 3.Qh5 Nf6 4.Qxf7#
     assert.equal(round(await mateValue(scholars, ['Qh5', 'Nf6', 'Qxf7#'], 40)), -0.985);
     // deeper is worth less, so the search prefers the shorter mate

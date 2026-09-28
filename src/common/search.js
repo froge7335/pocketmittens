@@ -80,23 +80,90 @@ function backup(path, value) {
   }
 }
 
+// Exact forced-mate search, used because the tree plays a mate in 2 or 3 it has already proven only
+// about a third of the time: visit counts outvote it. Our plies try checks only. That is what makes
+// it cheap - a couple of hundred nodes at worst instead of millions - and also what makes it
+// incomplete: a mate whose key move is quiet is missed. It is never wrong in the other direction,
+// because it plays out the mate before claiming it.
+//
+// These walk one board with move/undo and read check and mate off plain SAN. Building a fresh Chess
+// per node and asking for verbose moves is the obvious way to write it and measured 3.8x slower,
+// which matters because the worst positions for this are the check-heavy ones.
+
+// Every reply to the check just played runs into a mate within `plies`.
+function repliesAllMated(board, plies, budget) {
+  const replies = board.moves();
+  // no replies would make every() vacuously true, i.e. claim a mate without one
+  return replies.length > 0 && replies.every((reply) => {
+    board.move(reply);
+    const mated = forcesMate(board, plies, budget);
+    board.undo();
+    return mated;
+  });
+}
+
+// budget is shared across the whole recursion; running out reads as "no mate" and falls through to
+// the search, so the cap can only cost a missed mate, never a wrong move.
+function forcesMate(board, plies, budget) {
+  if (budget.n <= 0) return false;
+  budget.n -= 1;
+  const moves = board.moves();
+  if (moves.some((san) => san.endsWith('#'))) return true; // chess.js marks mate in SAN
+  if (plies < 3) return false;
+  for (const san of moves) {
+    if (!san.endsWith('+')) continue;
+    board.move(san);
+    const forced = repliesAllMated(board, plies - 2, budget);
+    board.undo();
+    if (forced) return true;
+  }
+  return false;
+}
+
+// The move that forces mate within `plies`, or null. Separate from forcesMate only because the root
+// needs to know which move it is, not just that one exists.
+function findMate(chess, plies, budget) {
+  const moves = chess.moves({ verbose: true });
+  const mate = moves.find((m) => m.san.endsWith('#'));
+  if (mate) return mate;
+  if (plies < 3) return null;
+  const board = new Chess(chess.fen());
+  for (const m of moves) {
+    if (!m.san.endsWith('+')) continue;
+    board.move(m.san);
+    const forced = repliesAllMated(board, plies - 2, budget);
+    board.undo();
+    if (forced) return m;
+  }
+  return null;
+}
+
+// Allowing mate in 1 is never better than the alternative, so those moves are dropped before the net
+// scores the root and the priors renormalise over what is left. If every move allows it the position
+// is lost anyway and the search still needs something to return.
+function safeMoves(moves) {
+  const safe = moves.filter((m) => !new Chess(m.after).moves().some((san) => san.endsWith('#')));
+  return safe.length ? safe : moves;
+}
+
 // evaluate(fen, legalUcis, turn, ep) -> Promise<{priors: Map<uci, prob>, value: number}>.
 // ep: en passant square as training sets it (see epAfter); the ep option gives the root's.
 // history: game FENs since the last capture or pawn move. A position repeating one of
 // them, or one earlier on the same line, scores as a draw (twofold: the repeating side
 // can force the threefold), so a winning side avoids repetition and a losing side seeks it.
-// A mate at the root is played at once (visit counts can outvote a proven mate), and a mate
-// found deeper loses matePenalty per ply, so a shorter mate outranks a longer one.
+// A forced mate within mateDepth plies is played at once (see findMate), and a mate the tree finds
+// deeper loses matePenalty per ply, so a shorter mate outranks a longer one.
 // Returns {uci, visits, q} for the most-visited root move, or null if cancelled.
 export async function runMcts(fen, evaluate, sims,
-  { cPuct = 1.5, fpuReduction = 0.2, matePenalty = 0.005, isCancelled = () => false, history = [], ep = fen.split(' ')[3] } = {}) {
+  { cPuct = 1.5, fpuReduction = 0.2, matePenalty = 0.005, mateDepth = 5, mateBudget = 400,
+    isCancelled = () => false, history = [], ep = fen.split(' ')[3] } = {}) {
   const past = new Set(history.map(positionKey));
   past.add(positionKey(fen));
   const root = new Node(0, fen, ep);
   const chess = new Chess(fen);
-  const moves = chess.moves({ verbose: true });
-  const mate = moves.find((m) => m.san.endsWith('#')); // chess.js marks mate in SAN
+  const mate = findMate(chess, mateDepth, { n: mateBudget });
   if (mate) return { uci: toUci(mate), visits: 1, q: 1.0 };
+  const moves = safeMoves(chess.moves({ verbose: true }));
   const rootEval = await evaluate(fen, moves.map(toUci), chess.turn(), ep);
   expand(root, moves, rootEval.priors);
   backup([root], rootEval.value);
